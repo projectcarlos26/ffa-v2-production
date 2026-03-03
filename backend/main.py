@@ -23,21 +23,24 @@ from sqlalchemy.orm import Session
 app = FastAPI(
     title="Furniture Forensic Analyst v2",
     description="AI-powered damage attribution for furniture",
-    version="2.0.0-MVP"
+    version="2.0.0-MVP",
 )
 
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
-    """Create database tables on startup"""
     Base.metadata.create_all(bind=engine)
 
 
+origins = [
+    "https://ffa-v2-production.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ffa-v2-production.vercel.app", "https://ffa-v2-backend2.onrender.com", "*"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
