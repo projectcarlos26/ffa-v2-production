@@ -6,7 +6,7 @@ FastAPI Application - Updated for new form structure
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 import uuid
@@ -81,7 +81,8 @@ class CaseSubmission(BaseModel):
     # Photos
     photos: List[str] = Field(default_factory=list, description="List of uploaded photo URLs")
     
-    @Field.validator('bolStatus')
+    @field_validator('bolStatus')
+    @classmethod
     def validate_bol_status(cls, v):
         valid_statuses = ["signed_clean", "not_signed", "damage_notated", "no_bol"]
         if v and v not in valid_statuses:
