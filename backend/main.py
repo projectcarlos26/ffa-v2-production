@@ -47,7 +47,7 @@ app.add_middleware(
 
 
 # File upload configuration
-UPLOAD_DIR = "../uploads"
+UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Mount static files for uploads
