@@ -14,25 +14,32 @@ import os
 import shutil
 
 # Import database and analysis
-from database import get_db, Case, EvidenceItem, Verdict, SessionLocal
+from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine
+
 from analysis import analyze_case
 from sqlalchemy.orm import Session
 
 # Initialize FastAPI app
 app = FastAPI(
+# Create database tables on startup
+@app.on_event("startup")
+async def startup_event():
+    """Create database tables on startup"""
+    Base.metadata.create_all(bind=engine)
+
     title="Furniture Forensic Analyst v2",
     description="AI-powered damage attribution for furniture",
     version="2.0.0-MVP"
 )
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For MVP - restrict in production
+    allow_origins=["https://ffa-v2-production.vercel.app", "https://ffa-v2-backend2.onrender.com", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # File upload configuration
 UPLOAD_DIR = "../uploads"
