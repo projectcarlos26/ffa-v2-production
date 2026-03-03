@@ -21,16 +21,17 @@ from sqlalchemy.orm import Session
 
 # Initialize FastAPI app
 app = FastAPI(
+    title="Furniture Forensic Analyst v2",
+    description="AI-powered damage attribution for furniture",
+    version="2.0.0-MVP"
+)
+
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
     """Create database tables on startup"""
     Base.metadata.create_all(bind=engine)
 
-    title="Furniture Forensic Analyst v2",
-    description="AI-powered damage attribution for furniture",
-    version="2.0.0-MVP"
-)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # File upload configuration
