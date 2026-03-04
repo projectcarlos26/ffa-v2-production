@@ -29,6 +29,12 @@ app = FastAPI(
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
+    # Reset SQLite database if schema changed (MVP fix)
+    db_path = "ffa.db"
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
     Base.metadata.create_all(bind=engine)
 
 
