@@ -12,6 +12,7 @@ from datetime import datetime
 import uuid
 import os
 import shutil
+import json
 
 # Import database and analysis
 from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine
@@ -309,7 +310,7 @@ async def get_case(case_id: str, db: Session = Depends(get_db)):
             "verdict": verdict.verdict,
             "confidence_score": verdict.confidence_score,
             "reasoning": verdict.reasoning,
-            "report_sections": verdict.report_sections,
+            "report_sections": json.loads(verdict.report_sections) if verdict.report_sections else {},
             "created_at": verdict.created_at.isoformat()
         } if verdict else None
     }
@@ -390,7 +391,7 @@ async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
         photo_quality_score=analysis_result["scores"]["photo_quality"],
         evidence_consistency_score=analysis_result["scores"]["evidence_consistency"],
         historical_correlation_score=analysis_result["scores"]["historical_correlation"],
-        report_sections=analysis_result["report_sections"],
+        report_sections=json.dumps(analysis_result.get("report_sections", {})),
         created_at=datetime.utcnow()
     )
     
