@@ -14,6 +14,29 @@ import os
 import shutil
 import json
 
+class CaseListItem(BaseModel):
+    id: str
+    created_at: str
+    updated_at: str
+    status: str
+
+    # Optional details for quick browsing
+    carrier: Optional[str] = None
+    warehouse: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    item_name: Optional[str] = None
+    severity: Optional[str] = None
+
+    # Verdict summary if analyzed
+    verdict: Optional[str] = None
+    confidence_score: Optional[int] = None
+    verdict_created_at: Optional[str] = None
+
+class CaseListResponse(BaseModel):
+    total: int
+    items: List[CaseListItem]
+
 # Import database and analysis
 from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine
 
@@ -188,6 +211,49 @@ async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db))
     db.add(case)
     db.commit()
     db.refresh(case)
+
+from sqlalchemy import func
+
+@app.get("/api/cases")
+async def list_cases(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    total = db.query(func.count(Case.id)).scalar() or 0
+
+    cases = (
+        db.query(Case)
+        .order_by(Case.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    results = []
+
+    for c in cases:
+        verdict = db.query(Verdict).filter(Verdict.case_id == c.id).first()
+
+        results.append({
+            "id": c.id,
+            "created_at": c.created_at.isoformat(),
+            "updated_at": c.updated_at.isoformat(),
+            "status": c.status,
+            "carrier": c.carrier,
+            "warehouse": c.warehouse,
+            "category": c.category,
+            "subcategory": c.subcategory,
+            "item_name": c.item_name,
+            "severity": c.severity,
+            "verdict": verdict.verdict if verdict else None,
+            "confidence_score": verdict.confidence_score if verdict else None
+        })
+
+    return {
+        "total": total,
+        "items": results
+    }
     
     # Create evidence items for each photo
     for idx, photo_url in enumerate(submission.photos):
@@ -365,6 +431,60 @@ async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
     
     photo_count = len(evidence_items)
     photo_angles = [item.angle for item in evidence_items if item.angle]
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+@app.get("/api/cases", response_model=CaseListResponse)
+async def list_cases(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    # total count
+    total = db.query(func.count(Case.id)).scalar() or 0
+
+    # pull cases newest first
+    cases = (
+        db.query(Case)
+        .order_by(Case.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # grab verdicts for these cases in one query
+    case_ids = [c.id for c in cases]
+    verdicts = (
+        db.query(Verdict)
+        .filter(Verdict.case_id.in_(case_ids))
+        .all()
+    )
+    verdict_map = {v.case_id: v for v in verdicts}
+
+    items = []
+    for c in cases:
+        v = verdict_map.get(c.id)
+
+        items.append(
+            CaseListItem(
+                id=c.id,
+                created_at=c.created_at.isoformat(),
+                updated_at=c.updated_at.isoformat(),
+                status=c.status,
+                carrier=c.carrier,
+                warehouse=c.warehouse,
+                category=c.category,
+                subcategory=c.subcategory,
+                item_name=c.item_name,
+                severity=c.severity,
+                verdict=v.verdict if v else None,
+                confidence_score=v.confidence_score if v else None,
+                verdict_created_at=v.created_at.isoformat() if v and v.created_at else None,
+            )
+        )
+
+    return CaseListResponse(total=total, items=items)
     
     # Perform analysis with new parameters
     analysis_result = analyze_case(
