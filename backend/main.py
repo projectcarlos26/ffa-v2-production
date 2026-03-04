@@ -26,16 +26,20 @@ app = FastAPI(
     version="2.0.0-MVP",
 )
 
+from pathlib import Path
+
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
-    # Reset SQLite database if schema changed (MVP fix)
-    db_path = "ffa.db"
-
-    if os.path.exists(db_path):
-        os.remove(db_path)
-
+    # The most reliable way to reset the schema:
+    # Use SQLAlchemy to drop all tables via the active connection engine.
+    # This ignores file paths and targets the database directly.
+    Base.metadata.drop_all(bind=engine)
+    
+    # Recreate tables with the new columns (ship_date, delivery_date, etc.)
     Base.metadata.create_all(bind=engine)
+    
+    print("Database schema successfully reset and recreated.")
 
 
 origins = [
