@@ -7,9 +7,13 @@ from sqlalchemy import create_engine, Column, String, Integer, Float, Text, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
+from pathlib import Path
 
-# SQLite database URL
-DATABASE_URL = "sqlite:///./ffa_mvp.db"
+# SQLite database path (absolute path so Render always uses the same file)
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "ffa_mvp.db"
+
+DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # Create engine
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})

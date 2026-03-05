@@ -38,7 +38,7 @@ class CaseListResponse(BaseModel):
     items: List[CaseListItem]
 
 # Import database and analysis
-from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine
+from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine, DB_PATH
 
 from analysis import analyze_case
 from sqlalchemy.orm import Session
@@ -55,11 +55,8 @@ from pathlib import Path
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
-    # Reset SQLite database so schema updates apply
-    db_path = "ffa_mvp.db"   # must match database.py
-
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    if DB_PATH.exists():
+        DB_PATH.unlink()
 
     Base.metadata.create_all(bind=engine)
 
