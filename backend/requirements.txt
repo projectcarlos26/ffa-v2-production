@@ -15,12 +15,15 @@ anyio>=4.7.0
 # Image Processing
 Pillow==10.1.0
 
-# CORS
+# OpenAI
+openai>=1.30.0
+
+# Environment
 python-dotenv==1.0.0
 
 # Logging
 python-json-logger==2.0.7
 
-# Testing (for later)
+# Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1
