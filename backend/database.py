@@ -9,6 +9,9 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from pathlib import Path
 
+DB_PATH = Path("/tmp/ffa_mvp.db")
+DATABASE_URL = f"sqlite:///{DB_PATH}"
+
 # SQLite database path (absolute path so Render always uses the same file)
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "ffa_mvp.db"
@@ -17,6 +20,9 @@ DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # Create engine
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+print("DB_URL:", DATABASE_URL)
+print("DB_PATH:", DB_PATH)
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -104,4 +110,3 @@ def get_db():
         db.close()
 
 # Create tables
-Base.metadata.create_all(bind=engine)
