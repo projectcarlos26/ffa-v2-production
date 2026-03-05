@@ -55,13 +55,8 @@ from pathlib import Path
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
-    print("STARTUP DB_PATH:", DB_PATH)
-    print("DB exists before delete:", DB_PATH.exists())
-
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-
     Base.metadata.create_all(bind=engine)
+    print("Tables ensured.")
 
     print("SQLite DB reset and tables created.")
 
