@@ -173,21 +173,58 @@ async def health_check():
 # Case submission endpoint - Updated
 @app.post("/api/submit", response_model=CaseResponse)
 async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db)):
-    """
-    Submit a new furniture damage case for analysis
-    
-    Accepts the new form structure with case details, item details, and damage info
-    """
-
     try:
         case_id = str(uuid.uuid4())
 
-        # your existing code should continue here
-        # (creating case, saving to DB, running analysis, etc.)
+        case = Case(
+            id=case_id,
+            ship_date=submission.shipDate,
+            delivery_date=submission.deliveryDate,
+            notification_date=submission.notificationDate,
+            bol_status=submission.bolStatus,
+            bol_damage_desc=submission.bolDamageDesc,
+            carrier=submission.carrier,
+            warehouse=submission.warehouse,
+            category=submission.category,
+            subcategory=submission.subcategory,
+            item_name=submission.itemName,
+            damage_types=",".join(submission.damageTypes) if submission.damageTypes else None,
+            severity=submission.severity,
+            damage_description=submission.damageDesc,
+            damage_location=submission.damageLocation,
+            discovery_time=submission.discoveryTime,
+            damage_context=submission.damageContext,
+            status="pending",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
 
-    except HTTPException:
-        raise
+        db.add(case)
+        db.commit()
+        db.refresh(case)
+
+        # Save evidence rows (photo URLs)
+        for idx, photo_url in enumerate(submission.photos or []):
+            evidence = EvidenceItem(
+                case_id=case_id,
+                filename=(photo_url.split("/")[-1] if photo_url else f"photo_{idx}"),
+                file_path=photo_url,
+                upload_order=idx,
+                uploaded_at=datetime.utcnow(),
+            )
+            db.add(evidence)
+
+        db.commit()
+
+        return CaseResponse(
+            case_id=case_id,
+            status="pending",
+            message="Case submitted successfully. Analysis will begin shortly.",
+            created_at=case.created_at.isoformat(),
+        )
+
     except Exception as e:
+        # This will show the real reason in the response instead of a blank 500
         print("SUBMIT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
     
