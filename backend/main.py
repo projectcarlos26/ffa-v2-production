@@ -178,7 +178,13 @@ async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db))
     
     Accepts the new form structure with case details, item details, and damage info
     """
+    try:
     case_id = str(uuid.uuid4())
+   except HTTPException:
+    raise
+   except Exception as e:
+    print("SUBMIT ERROR:", repr(e))
+    raise HTTPException(status_code=500, detail=str(e))
     
     # Create case record with all new fields
     case = Case(
