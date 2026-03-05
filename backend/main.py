@@ -55,8 +55,15 @@ from pathlib import Path
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
+    # Reset SQLite database so schema updates apply
+    db_path = "ffa_mvp.db"   # must match database.py
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
     Base.metadata.create_all(bind=engine)
-    print("Database tables ensured.")
+
+    print("SQLite DB reset and tables created.")
 
 
 origins = [
