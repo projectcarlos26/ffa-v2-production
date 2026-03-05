@@ -38,7 +38,7 @@ class CaseListResponse(BaseModel):
     items: List[CaseListItem]
 
 # Import database and analysis
-from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine, DB_PATH
+from database import get_db, Case, EvidenceItem, Verdict, SessionLocal, Base, engine, ensure_case_columns
 
 from analysis import analyze_case
 from sqlalchemy.orm import Session
@@ -52,13 +52,12 @@ app = FastAPI(
 
 from pathlib import Path
 
-# Create database tables on startup
+# Create database tables and migrate columns on startup
 @app.on_event("startup")
 async def startup_event():
     Base.metadata.create_all(bind=engine)
-    print("Tables ensured.")
-
-    print("SQLite DB reset and tables created.")
+    ensure_case_columns(engine)
+    print("Tables ensured and columns migrated.")
 
 origins = [
     "https://ffa-v2-production.vercel.app",

@@ -21,9 +21,6 @@ DATABASE_URL = f"sqlite:///{DB_PATH}"
 # Create engine
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-print("DB_URL:", DATABASE_URL)
-print("DB_PATH:", DB_PATH)
-
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -108,5 +105,33 @@ def get_db():
         yield db
     finally:
         db.close()
+
+from sqlalchemy import text
+
+def ensure_case_columns(engine):
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(cases)")).fetchall()
+        existing = {c[1] for c in cols}
+
+        def add_col(name, sql_type):
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE cases ADD COLUMN {name} {sql_type}"))
+                conn.commit()
+
+        add_col("ship_date", "TEXT")
+        add_col("delivery_date", "TEXT")
+        add_col("notification_date", "TEXT")
+        add_col("bol_status", "TEXT")
+        add_col("bol_damage_desc", "TEXT")
+        add_col("carrier", "TEXT")
+        add_col("warehouse", "TEXT")
+        add_col("category", "TEXT")
+        add_col("subcategory", "TEXT")
+        add_col("item_name", "TEXT")
+        add_col("damage_types", "TEXT")
+        add_col("severity", "TEXT")
+        add_col("damage_location", "TEXT")
+        add_col("discovery_time", "TEXT")
+        add_col("damage_context", "TEXT")
 
 # Create tables
