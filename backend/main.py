@@ -55,15 +55,8 @@ from pathlib import Path
 # Create database tables on startup
 @app.on_event("startup")
 async def startup_event():
-    # The most reliable way to reset the schema:
-    # Use SQLAlchemy to drop all tables via the active connection engine.
-    # This ignores file paths and targets the database directly.
-    Base.metadata.drop_all(bind=engine)
-    
-    # Recreate tables with the new columns (ship_date, delivery_date, etc.)
     Base.metadata.create_all(bind=engine)
-    
-    print("Database schema successfully reset and recreated.")
+    print("Database tables ensured.")
 
 
 origins = [
@@ -228,81 +221,6 @@ async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db))
         print("SUBMIT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
     
-    # Create case record with all new fields
-    case = Case(
-        id=case_id,
-        # Case details
-        ship_date=submission.shipDate,
-        delivery_date=submission.deliveryDate,
-        notification_date=submission.notificationDate,
-        bol_status=submission.bolStatus,
-        bol_damage_desc=submission.bolDamageDesc,
-        carrier=submission.carrier,
-        warehouse=submission.warehouse,
-        # Item details
-        category=submission.category,
-        subcategory=submission.subcategory,
-        item_name=submission.itemName,
-        # Damage info
-        damage_types=",".join(submission.damageTypes) if submission.damageTypes else None,
-        severity=submission.severity,
-        damage_description=submission.damageDesc,
-        damage_location=submission.damageLocation,
-        discovery_time=submission.discoveryTime,
-        damage_context=submission.damageContext,
-        # Status
-        status="pending",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    
-    db.add(case)
-    db.commit()
-    db.refresh(case)
-
-from sqlalchemy import func
-
-@app.get("/api/cases")
-async def list_cases(
-    limit: int = 50,
-    offset: int = 0,
-    db: Session = Depends(get_db)
-):
-    total = db.query(func.count(Case.id)).scalar() or 0
-
-    cases = (
-        db.query(Case)
-        .order_by(Case.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-    results = []
-
-    for c in cases:
-        verdict = db.query(Verdict).filter(Verdict.case_id == c.id).first()
-
-        results.append({
-            "id": c.id,
-            "created_at": c.created_at.isoformat(),
-            "updated_at": c.updated_at.isoformat(),
-            "status": c.status,
-            "carrier": c.carrier,
-            "warehouse": c.warehouse,
-            "category": c.category,
-            "subcategory": c.subcategory,
-            "item_name": c.item_name,
-            "severity": c.severity,
-            "verdict": verdict.verdict if verdict else None,
-            "confidence_score": verdict.confidence_score if verdict else None
-        })
-
-    return {
-        "total": total,
-        "items": results
-    }
-    
     # Create evidence items for each photo
     for idx, photo_url in enumerate(submission.photos):
         evidence = EvidenceItem(
@@ -455,33 +373,77 @@ async def get_case_status(case_id: str, db: Session = Depends(get_db)):
     }
 
 # Analysis endpoint - Updated
+
 @app.post("/api/analyze/{case_id}")
 async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
     """
-    Trigger AI analysis for a case
-    
-    Uses the updated 4-factor confidence scoring algorithm with BOL influence
+    Trigger AI analysis for a case.
+
+    Runs analysis, saves/updates verdict, and marks case complete.
     """
     case = db.query(Case).filter(Case.id == case_id).first()
-    
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    
+
     # Update status to processing
     case.status = "processing"
     case.updated_at = datetime.utcnow()
     db.commit()
-    
-    # Get evidence items (photos)
-    evidence_items = db.query(EvidenceItem).filter(
-        EvidenceItem.case_id == case_id
-    ).all()
-    
-    photo_count = len(evidence_items)
-    photo_angles = [item.angle for item in evidence_items if item.angle]
 
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+    # Get evidence items (photos)
+    evidence_items = (
+        db.query(EvidenceItem)
+        .filter(EvidenceItem.case_id == case_id)
+        .order_by(EvidenceItem.upload_order)
+        .all()
+    )
+
+    photo_count = len(evidence_items)
+    photo_angles = [item.angle for item in evidence_items if getattr(item, "angle", None)]
+
+    # Run analysis
+    analysis_result = analyze_case(
+        category=case.category,
+        description=case.damage_description,
+        damage_types=case.damage_types.split(",") if case.damage_types else [],
+        severity=case.severity,
+        damage_location=case.damage_location,
+        discovery_time=case.discovery_time,
+        damage_context=case.damage_context,
+        bol_status=case.bol_status,
+        carrier=case.carrier,
+        photo_count=photo_count,
+        photo_angles=photo_angles if photo_angles else []
+    )
+
+    # Create or update verdict
+    verdict = db.query(Verdict).filter(Verdict.case_id == case_id).first()
+    if not verdict:
+        verdict = Verdict(case_id=case_id, created_at=datetime.utcnow())
+        db.add(verdict)
+
+    verdict.verdict = analysis_result["verdict"]
+    verdict.confidence_score = analysis_result["confidence_score"]
+    verdict.reasoning = analysis_result["reasoning"]
+    verdict.pattern_match_score = analysis_result["scores"]["pattern_match"]
+    verdict.photo_quality_score = analysis_result["scores"]["photo_quality"]
+    verdict.evidence_consistency_score = analysis_result["scores"]["evidence_consistency"]
+    verdict.historical_correlation_score = analysis_result["scores"]["historical_correlation"]
+    verdict.report_sections = json.dumps(analysis_result.get("report_sections", {}))
+
+    # Mark complete
+    case.status = "complete"
+    case.updated_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "case_id": case_id,
+        "status": "complete",
+        "verdict": verdict.verdict,
+        "confidence_score": verdict.confidence_score,
+        "message": "Analysis complete"
+    }
 
 @app.get("/api/cases", response_model=CaseListResponse)
 async def list_cases(
