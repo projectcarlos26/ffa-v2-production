@@ -174,16 +174,52 @@ def _build_absolute_url(path: str) -> str:
     return f"{BACKEND_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
 
-def run_openai_analysis(case: Case, evidence_items: list) -> dict:
+def _image_to_base64_block(file_path: str) -> Optional[dict]:
     """
-    Call OpenAI vision API with all case data and photos.
-    Returns a dict matching the required JSON schema.
-    Falls back to inconclusive on any error.
+    Read an image from local disk and return an OpenAI base64 image content block.
+    file_path may be a relative path like /uploads/x.jpg or an absolute path.
+    Returns None if the file cannot be read.
     """
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    import base64
+    import mimetypes
 
-    fallback = {
+    # Resolve to absolute path on disk
+    if file_path.startswith("/uploads/"):
+        filename = file_path[len("/uploads/"):]
+        abs_path = os.path.join(UPLOAD_DIR, filename)
+    elif file_path.startswith("http"):
+        # Extract filename from URL
+        filename = file_path.split("/")[-1].split("?")[0]
+        abs_path = os.path.join(UPLOAD_DIR, filename)
+    else:
+        abs_path = file_path if os.path.isabs(file_path) else os.path.join(UPLOAD_DIR, os.path.basename(file_path))
+
+    if not os.path.exists(abs_path):
+        logger.warning(f"Image file not found on disk: {abs_path}")
+        return None
+
+    try:
+        mime_type, _ = mimetypes.guess_type(abs_path)
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+
+        with open(abs_path, "rb") as f:
+            data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64,{data}",
+                "detail": "high",
+            },
+        }
+    except Exception as e:
+        logger.warning(f"Could not read image {abs_path}: {e}")
+        return None
+
+
+def _make_fallback(severity: Optional[str], reason: str, next_steps: list = None) -> dict:
+    return {
         "verdict": "inconclusive",
         "confidence_score": 0,
         "scores": {
@@ -193,37 +229,51 @@ def run_openai_analysis(case: Case, evidence_items: list) -> dict:
             "historical_correlation": 0,
         },
         "photo_observations": [],
-        "reasoning": "AI analysis unavailable: OPENAI_API_KEY not configured.",
-        "missing_information": ["OpenAI API key required for AI analysis"],
+        "reasoning": reason,
+        "missing_information": [],
         "report_sections": {
             "primary_damage": "Unknown",
             "damage_type": "Unknown",
-            "severity": case.severity or "Not specified",
+            "severity": severity or "Not specified",
             "confidence_level": "Low",
-            "next_steps": ["Configure OPENAI_API_KEY environment variable to enable AI analysis"],
+            "next_steps": next_steps or ["Manual review required"],
         },
     }
 
+
+def run_openai_analysis(case: Case, evidence_items: list) -> dict:
+    """
+    Call OpenAI vision API with all case data and photos encoded as base64.
+    Images are read from local disk — no public URL downloads required.
+    Falls back to inconclusive on any error without crashing.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    model   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
     if not api_key:
         logger.warning("OPENAI_API_KEY not set — returning inconclusive fallback.")
-        return fallback
+        return _make_fallback(
+            case.severity,
+            "AI analysis unavailable: API key not configured on the server.",
+            ["Contact system administrator to configure the OpenAI API key"],
+        )
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+    # ── Load images from disk as base64 ──────────────────────────────────
+    image_blocks = []
+    skipped = 0
+    for item in evidence_items:
+        block = _image_to_base64_block(item.file_path)
+        if block:
+            image_blocks.append(block)
+        else:
+            skipped += 1
+            logger.warning(f"Skipped image (not readable): {item.file_path}")
 
-        # Build image content blocks
-        image_blocks = []
-        for item in evidence_items:
-            url = _build_absolute_url(item.file_path)
-            image_blocks.append({
-                "type": "image_url",
-                "image_url": {"url": url, "detail": "high"},
-            })
+    loaded_count = len(image_blocks)
+    logger.info(f"Images loaded for analysis: {loaded_count} loaded, {skipped} skipped")
 
-        # Build text summary of case data
-        case_summary = f"""
-CASE DETAILS:
+    # ── Build case summary text ───────────────────────────────────────────
+    case_summary = f"""CASE DETAILS:
 - Delivery Date: {case.delivery_date or 'Not provided'}
 - Notification Date: {case.notification_date or 'Not provided'}
 - Ship Date: {case.ship_date or 'Not provided'}
@@ -245,10 +295,9 @@ DAMAGE DETAILS:
 - Discovery Time: {case.discovery_time or 'Not specified'}
 - Additional Context: {case.damage_context or 'None'}
 
-PHOTOS: {len(evidence_items)} photo(s) attached.
-""".strip()
+PHOTOS: {loaded_count} photo(s) attached ({skipped} could not be loaded)."""
 
-        system_prompt = """You are a senior logistics damage investigator specializing in furniture damage claims. Determine whether damage is from manufacturing/quality defect, transit/handling, or inconclusive.
+    system_prompt = """You are a senior logistics damage investigator specializing in furniture damage claims. Determine whether damage is from manufacturing/quality defect, transit/handling, or inconclusive.
 
 Be precise and evidence-based. Avoid generic statements. When photos are available, cite visible indicators such as:
 - Carton crushing, corner compression, punctures
@@ -260,7 +309,7 @@ If evidence is weak or photos are missing/unclear, reduce confidence and list mi
 
 Return ONLY valid JSON matching the required schema. No markdown formatting, no code blocks."""
 
-        required_schema = """{
+    required_schema = """{
   "verdict": "manufacturing | transit | inconclusive",
   "confidence_score": 0-100,
   "scores": {
@@ -270,7 +319,7 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
     "historical_correlation": 0-25
   },
   "photo_observations": ["observation 1", "observation 2"],
-  "reasoning": "Detailed explanation referencing specific evidence",
+  "reasoning": "Detailed explanation referencing specific evidence from images and case data",
   "missing_information": ["item 1"],
   "report_sections": {
     "primary_damage": "description",
@@ -281,12 +330,16 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
   }
 }"""
 
-        user_content = [
-            {
-                "type": "text",
-                "text": f"{case_summary}\n\nAnalyze this case and return JSON matching this schema:\n{required_schema}",
-            }
-        ] + image_blocks
+    user_content = [
+        {
+            "type": "text",
+            "text": f"{case_summary}\n\nAnalyze this case and return JSON matching this schema:\n{required_schema}",
+        }
+    ] + image_blocks
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
 
         response = client.chat.completions.create(
             model=model,
@@ -302,20 +355,18 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
 
         # Strip markdown code fences if present
         if raw.startswith("```"):
-            raw = raw.split("```")[1]
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
             if raw.startswith("json"):
                 raw = raw[4:]
         raw = raw.strip()
 
         result = json.loads(raw)
 
-        # Validate and repair required keys
+        # ── Validate and repair required keys ────────────────────────────
         result.setdefault("verdict", "inconclusive")
         result.setdefault("confidence_score", 0)
-        result.setdefault("scores", {
-            "pattern_match": 0, "photo_quality": 0,
-            "evidence_consistency": 0, "historical_correlation": 0,
-        })
+        result.setdefault("scores", {})
         result["scores"].setdefault("pattern_match", 0)
         result["scores"].setdefault("photo_quality", 0)
         result["scores"].setdefault("evidence_consistency", 0)
@@ -323,30 +374,46 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
         result.setdefault("photo_observations", [])
         result.setdefault("reasoning", "No reasoning provided.")
         result.setdefault("missing_information", [])
-        result.setdefault("report_sections", {
-            "primary_damage": "Unknown",
-            "damage_type": "Unknown",
-            "severity": case.severity or "Not specified",
-            "confidence_level": "Low",
-            "next_steps": [],
-        })
+        result.setdefault("report_sections", {})
+        result["report_sections"].setdefault("primary_damage", "Unknown")
+        result["report_sections"].setdefault("damage_type", "Unknown")
+        result["report_sections"].setdefault("severity", case.severity or "Not specified")
+        result["report_sections"].setdefault("confidence_level", "Low")
+        result["report_sections"].setdefault("next_steps", [])
 
-        # Clamp scores
+        # Clamp numeric scores
         result["confidence_score"] = max(0, min(100, int(result["confidence_score"])))
         for k in result["scores"]:
             result["scores"][k] = max(0, min(25, int(result["scores"][k])))
 
-        # Validate verdict value
+        # Validate verdict
         if result["verdict"] not in ("manufacturing", "transit", "inconclusive"):
             result["verdict"] = "inconclusive"
 
         logger.info(f"OpenAI analysis complete: verdict={result['verdict']} confidence={result['confidence_score']}")
         return result
 
+    except json.JSONDecodeError as e:
+        logger.error(f"OpenAI returned invalid JSON: {e} | raw: {raw[:200]}")
+        return _make_fallback(case.severity, f"AI returned malformed response. Manual review recommended.")
+
     except Exception as e:
-        logger.error(f"OpenAI analysis failed: {e}")
-        fallback["reasoning"] = f"AI analysis unavailable: {str(e)}"
-        return fallback
+        err_str = str(e)
+        logger.error(f"OpenAI analysis failed: {err_str}")
+
+        # Provide specific, accurate reasoning based on error type
+        if "invalid_image_url" in err_str or "Timeout" in err_str or "downloading" in err_str.lower():
+            reason = "Image retrieval failed during analysis. The uploaded images could not be processed. Please re-upload photos and try again."
+        elif "api_key" in err_str.lower() or "authentication" in err_str.lower() or "401" in err_str:
+            reason = "AI analysis failed: API authentication error. Please verify the API key configuration."
+        elif "rate_limit" in err_str.lower() or "429" in err_str:
+            reason = "AI analysis failed: Rate limit reached. Please wait a moment and try again."
+        elif "context_length" in err_str.lower() or "too many" in err_str.lower():
+            reason = "AI analysis failed: Too many images submitted. Please reduce the number of photos and try again."
+        else:
+            reason = f"AI analysis encountered an error: {err_str[:200]}"
+
+        return _make_fallback(case.severity, reason, ["Re-upload photos and retry analysis", "Or proceed with manual review"])
 
 
 # ─────────────────────────────────────────────
