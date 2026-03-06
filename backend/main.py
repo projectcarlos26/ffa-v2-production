@@ -1,7 +1,8 @@
 """
 Furniture Forensic Analyst v2 - Backend API
-All fixes applied: CORS, DB migration, required field validation,
-OpenAI vision analysis, endpoint cleanup.
+Full implementation: CORS, DB migration, validation, OpenAI vision,
+carrier claim probability, packaging failure detection, claim report endpoint,
+enhanced filtering/sorting on GET /api/cases.
 """
 
 import json
@@ -11,11 +12,11 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database import (
@@ -26,28 +27,28 @@ from database import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # APP INIT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Furniture Forensic Analyst v2",
     description="AI-powered damage attribution for furniture",
-    version="2.0.0-MVP",
+    version="2.1.0",
 )
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # STARTUP: schema migration
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup_event():
     ensure_schema()
     logger.info("Schema ensured on startup.")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # CORS — must allow Vercel frontend
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,9 +62,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # FILE UPLOADS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -71,9 +72,9 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "https://ffa-v2-backend2.onrender.com")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # CATEGORIES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 SUBCATEGORIES = {
     "dining":   ["Dining Chairs", "Dining Tables", "Bar/Counter Stools", "Dining Sets",
@@ -87,9 +88,9 @@ SUBCATEGORIES = {
     "outdoor":  ["Outdoor Seating", "Outdoor Tables", "Outdoor Dining", "Accessories", "Other"],
 }
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PYDANTIC MODELS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class CaseSubmission(BaseModel):
     # Step 1 — required fields
@@ -143,29 +144,35 @@ class CaseResponse(BaseModel):
 
 
 class CaseListItem(BaseModel):
-    id:         str
-    created_at: str
-    updated_at: str
-    status:     str
-    carrier:    Optional[str] = None
-    warehouse:  Optional[str] = None
-    category:   Optional[str] = None
+    id:          str
+    created_at:  str
+    updated_at:  str
+    status:      str
+    carrier:     Optional[str] = None
+    warehouse:   Optional[str] = None
+    category:    Optional[str] = None
     subcategory: Optional[str] = None
-    item_name:  Optional[str] = None
-    severity:   Optional[str] = None
-    verdict:    Optional[str] = None
-    confidence_score:    Optional[int] = None
-    verdict_created_at:  Optional[str] = None
+    item_name:   Optional[str] = None
+    severity:    Optional[str] = None
+    bol_status:  Optional[str] = None
+    delivery_date: Optional[str] = None
+    notification_date: Optional[str] = None
+    damage_types: Optional[str] = None
+    verdict:     Optional[str] = None
+    confidence_score:   Optional[int] = None
+    verdict_created_at: Optional[str] = None
 
 
 class CaseListResponse(BaseModel):
     total: int
+    page:  int
+    page_size: int
     items: List[CaseListItem]
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # OPENAI ANALYSIS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_absolute_url(path: str) -> str:
     """Convert /uploads/x.png → https://ffa-v2-backend2.onrender.com/uploads/x.png"""
@@ -231,11 +238,24 @@ def _make_fallback(severity: Optional[str], reason: str, next_steps: list = None
         "photo_observations": [],
         "reasoning": reason,
         "missing_information": [],
+        "carrier_claim_probability": {
+            "score": 0,
+            "rating": "Low",
+            "factors": [],
+            "recommendation": "Manual review required",
+        },
+        "packaging_assessment": {
+            "failure_detected": False,
+            "indicators": [],
+            "packaging_adequacy": "Unknown",
+            "notes": "Analysis unavailable",
+        },
         "report_sections": {
             "primary_damage": "Unknown",
             "damage_type": "Unknown",
             "severity": severity or "Not specified",
             "confidence_level": "Low",
+            "completeness": 0,
             "next_steps": next_steps or ["Manual review required"],
         },
     }
@@ -258,7 +278,7 @@ def run_openai_analysis(case: Case, evidence_items: list) -> dict:
             ["Contact system administrator to configure the OpenAI API key"],
         )
 
-    # ── Load images from disk as base64 ──────────────────────────────────
+    # ── Load images from disk as base64 ──────────────────────────────────────
     image_blocks = []
     skipped = 0
     for item in evidence_items:
@@ -272,7 +292,27 @@ def run_openai_analysis(case: Case, evidence_items: list) -> dict:
     loaded_count = len(image_blocks)
     logger.info(f"Images loaded for analysis: {loaded_count} loaded, {skipped} skipped")
 
-    # ── Build case summary text ───────────────────────────────────────────
+    # ── Compute data completeness score ──────────────────────────────────────
+    completeness_fields = {
+        "delivery_date": case.delivery_date,
+        "notification_date": case.notification_date,
+        "bol_status": case.bol_status,
+        "carrier": case.carrier,
+        "warehouse": case.warehouse,
+        "category": case.category,
+        "subcategory": case.subcategory,
+        "item_name": case.item_name,
+        "damage_types": case.damage_types,
+        "severity": case.severity,
+        "damage_description": case.damage_description,
+        "damage_location": case.damage_location,
+        "discovery_time": case.discovery_time,
+        "photos": "yes" if loaded_count > 0 else None,
+    }
+    filled = sum(1 for v in completeness_fields.values() if v and str(v).strip())
+    completeness_pct = round((filled / len(completeness_fields)) * 100)
+
+    # ── Build case summary text ───────────────────────────────────────────────
     case_summary = f"""CASE DETAILS:
 - Delivery Date: {case.delivery_date or 'Not provided'}
 - Notification Date: {case.notification_date or 'Not provided'}
@@ -295,15 +335,27 @@ DAMAGE DETAILS:
 - Discovery Time: {case.discovery_time or 'Not specified'}
 - Additional Context: {case.damage_context or 'None'}
 
-PHOTOS: {loaded_count} photo(s) attached ({skipped} could not be loaded)."""
+PHOTOS: {loaded_count} photo(s) attached ({skipped} could not be loaded).
+DATA COMPLETENESS: {completeness_pct}% ({filled}/{len(completeness_fields)} fields provided)."""
 
-    system_prompt = """You are a senior logistics damage investigator specializing in furniture damage claims. Determine whether damage is from manufacturing/quality defect, transit/handling, or inconclusive.
+    system_prompt = """You are a senior logistics damage investigator and freight claims specialist with 20+ years of experience in furniture damage attribution. Your role is to:
+1. Determine whether damage is from manufacturing/quality defect, transit/handling, or inconclusive
+2. Assess the probability of a successful carrier claim
+3. Detect packaging failures that may affect claim outcomes
+4. Provide actionable, evidence-based recommendations
 
-Be precise and evidence-based. Avoid generic statements. When photos are available, cite visible indicators such as:
-- Carton crushing, corner compression, punctures
-- Abrasion patterns, impact fractures
-- Loose joints, misalignment, unfinished edges
+When analyzing photos, cite specific visible indicators such as:
+- Carton crushing, corner compression, punctures, moisture staining
+- Abrasion patterns, impact fractures, stress marks
+- Loose joints, misalignment, unfinished edges, assembly defects
 - Detached straps, symmetry issues, anchoring failures
+- Packaging material condition (foam, cardboard, wrap)
+
+BOL Status interpretation:
+- damage_notated: Strong support for transit claim
+- signed_clean: Weakens transit claim, may indicate concealed damage
+- not_signed: Neutral, investigate further
+- no_bol: Significantly weakens carrier claim
 
 If evidence is weak or photos are missing/unclear, reduce confidence and list missing information.
 
@@ -318,15 +370,34 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
     "evidence_consistency": 0-25,
     "historical_correlation": 0-25
   },
-  "photo_observations": ["observation 1", "observation 2"],
-  "reasoning": "Detailed explanation referencing specific evidence from images and case data",
-  "missing_information": ["item 1"],
+  "photo_observations": [
+    "Photo 1: [specific observation about visible damage indicators]",
+    "Photo 2: [specific observation]"
+  ],
+  "reasoning": "Detailed explanation referencing specific evidence from images and case data. Minimum 2-3 sentences.",
+  "missing_information": ["item 1", "item 2"],
+  "carrier_claim_probability": {
+    "score": 0-100,
+    "rating": "Low | Medium | High | Very High",
+    "factors": [
+      "Positive factor 1",
+      "Negative factor 1"
+    ],
+    "recommendation": "Specific action recommendation for filing or not filing carrier claim"
+  },
+  "packaging_assessment": {
+    "failure_detected": true | false,
+    "indicators": ["indicator 1", "indicator 2"],
+    "packaging_adequacy": "Adequate | Inadequate | Unknown",
+    "notes": "Assessment of packaging condition and its role in damage"
+  },
   "report_sections": {
-    "primary_damage": "description",
-    "damage_type": "type",
+    "primary_damage": "description of main damage",
+    "damage_type": "type of damage",
     "severity": "level",
     "confidence_level": "Low | Medium | High",
-    "next_steps": ["step 1", "step 2"]
+    "completeness": 0-100,
+    "next_steps": ["step 1", "step 2", "step 3"]
   }
 }"""
 
@@ -347,7 +418,7 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_content},
             ],
-            max_tokens=1500,
+            max_tokens=2000,
             temperature=0.2,
         )
 
@@ -363,7 +434,7 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
 
         result = json.loads(raw)
 
-        # ── Validate and repair required keys ────────────────────────────
+        # ── Validate and repair required keys ────────────────────────────────
         result.setdefault("verdict", "inconclusive")
         result.setdefault("confidence_score", 0)
         result.setdefault("scores", {})
@@ -374,17 +445,39 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
         result.setdefault("photo_observations", [])
         result.setdefault("reasoning", "No reasoning provided.")
         result.setdefault("missing_information", [])
+
+        # Carrier claim probability
+        result.setdefault("carrier_claim_probability", {})
+        result["carrier_claim_probability"].setdefault("score", 0)
+        result["carrier_claim_probability"].setdefault("rating", "Low")
+        result["carrier_claim_probability"].setdefault("factors", [])
+        result["carrier_claim_probability"].setdefault("recommendation", "Review case details")
+
+        # Packaging assessment
+        result.setdefault("packaging_assessment", {})
+        result["packaging_assessment"].setdefault("failure_detected", False)
+        result["packaging_assessment"].setdefault("indicators", [])
+        result["packaging_assessment"].setdefault("packaging_adequacy", "Unknown")
+        result["packaging_assessment"].setdefault("notes", "No packaging assessment available")
+
         result.setdefault("report_sections", {})
         result["report_sections"].setdefault("primary_damage", "Unknown")
         result["report_sections"].setdefault("damage_type", "Unknown")
         result["report_sections"].setdefault("severity", case.severity or "Not specified")
         result["report_sections"].setdefault("confidence_level", "Low")
+        result["report_sections"].setdefault("completeness", completeness_pct)
         result["report_sections"].setdefault("next_steps", [])
 
         # Clamp numeric scores
         result["confidence_score"] = max(0, min(100, int(result["confidence_score"])))
         for k in result["scores"]:
             result["scores"][k] = max(0, min(25, int(result["scores"][k])))
+        result["carrier_claim_probability"]["score"] = max(
+            0, min(100, int(result["carrier_claim_probability"]["score"]))
+        )
+        result["report_sections"]["completeness"] = max(
+            0, min(100, int(result["report_sections"].get("completeness", completeness_pct)))
+        )
 
         # Validate verdict
         if result["verdict"] not in ("manufacturing", "transit", "inconclusive"):
@@ -395,13 +488,12 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
 
     except json.JSONDecodeError as e:
         logger.error(f"OpenAI returned invalid JSON: {e} | raw: {raw[:200]}")
-        return _make_fallback(case.severity, f"AI returned malformed response. Manual review recommended.")
+        return _make_fallback(case.severity, "AI returned malformed response. Manual review recommended.")
 
     except Exception as e:
         err_str = str(e)
         logger.error(f"OpenAI analysis failed: {err_str}")
 
-        # Provide specific, accurate reasoning based on error type
         if "invalid_image_url" in err_str or "Timeout" in err_str or "downloading" in err_str.lower():
             reason = "Image retrieval failed during analysis. The uploaded images could not be processed. Please re-upload photos and try again."
         elif "api_key" in err_str.lower() or "authentication" in err_str.lower() or "401" in err_str:
@@ -416,23 +508,24 @@ Return ONLY valid JSON matching the required schema. No markdown formatting, no 
         return _make_fallback(case.severity, reason, ["Re-upload photos and retry analysis", "Or proceed with manual review"])
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINTS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
     return {
-        "message": "FFA v2 API - MVP",
+        "message": "FFA v2 API",
         "status": "running",
-        "version": "2.0.0-MVP",
+        "version": "2.1.0",
         "endpoints": {
-            "health":     "/health",
-            "submit":     "/api/submit",
-            "upload":     "/api/upload",
-            "list_cases": "/api/cases",
-            "get_case":   "/api/cases/{case_id}",
-            "analyze":    "/api/analyze/{case_id}",
+            "health":       "/health",
+            "submit":       "/api/submit",
+            "upload":       "/api/upload",
+            "list_cases":   "/api/cases",
+            "get_case":     "/api/cases/{case_id}",
+            "claim_report": "/api/cases/{case_id}/claim-report",
+            "analyze":      "/api/analyze/{case_id}",
         },
     }
 
@@ -442,7 +535,7 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
-# ── POST /api/submit ──────────────────────────
+# ── POST /api/submit ──────────────────────────────────────────────────────────
 
 @app.post("/api/submit", response_model=CaseResponse, status_code=201)
 async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db)):
@@ -450,7 +543,6 @@ async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db))
     Create a new damage case.
     Required: deliveryDate, notificationDate, bolStatus, damageDesc (min 30 chars).
     """
-    # Extra explicit validation (belt-and-suspenders on top of Pydantic)
     missing = []
     if not submission.deliveryDate:
         missing.append("deliveryDate")
@@ -520,7 +612,7 @@ async def submit_case(submission: CaseSubmission, db: Session = Depends(get_db))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── POST /api/upload ──────────────────────────
+# ── POST /api/upload ──────────────────────────────────────────────────────────
 
 @app.post("/api/upload")
 async def upload_photo(file: UploadFile = File(...)):
@@ -555,23 +647,134 @@ async def upload_photo(file: UploadFile = File(...)):
     }
 
 
-# ── GET /api/cases ────────────────────────────
+# ── GET /api/cases ────────────────────────────────────────────────────────────
 
 @app.get("/api/cases", response_model=CaseListResponse)
-async def list_cases(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    total = db.query(func.count(Case.id)).scalar() or 0
-    cases = (
-        db.query(Case)
-        .order_by(Case.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    case_ids = [c.id for c in cases]
-    verdict_map = {
-        v.case_id: v
-        for v in db.query(Verdict).filter(Verdict.case_id.in_(case_ids)).all()
+async def list_cases(
+    # Pagination
+    page:      int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    # Filters
+    status:    Optional[str] = Query(None, description="Filter by status: pending|processing|complete"),
+    verdict:   Optional[str] = Query(None, description="Filter by verdict: manufacturing|transit|inconclusive"),
+    carrier:   Optional[str] = Query(None, description="Filter by carrier (partial match)"),
+    warehouse: Optional[str] = Query(None, description="Filter by warehouse (partial match)"),
+    category:  Optional[str] = Query(None, description="Filter by category"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
+    severity:  Optional[str] = Query(None, description="Filter by severity"),
+    bol_status: Optional[str] = Query(None, description="Filter by BOL status"),
+    item_name: Optional[str] = Query(None, description="Filter by item name (partial match)"),
+    date_from: Optional[str] = Query(None, description="Filter cases created on or after (YYYY-MM-DD)"),
+    date_to:   Optional[str] = Query(None, description="Filter cases created on or before (YYYY-MM-DD)"),
+    min_confidence: Optional[int] = Query(None, ge=0, le=100, description="Minimum confidence score"),
+    max_confidence: Optional[int] = Query(None, ge=0, le=100, description="Maximum confidence score"),
+    search:    Optional[str] = Query(None, description="Search across item name, carrier, warehouse"),
+    # Sorting
+    sort_by:   str = Query("created_at", description="Sort field: created_at|severity|confidence_score|verdict|carrier|category"),
+    sort_dir:  str = Query("desc", description="Sort direction: asc|desc"),
+    db: Session = Depends(get_db),
+):
+    """
+    List cases with comprehensive filtering, sorting, and pagination.
+    """
+    query = db.query(Case)
+
+    # ── Apply filters ─────────────────────────────────────────────────────────
+    if status:
+        query = query.filter(Case.status == status)
+    if category:
+        query = query.filter(Case.category == category)
+    if subcategory:
+        query = query.filter(Case.subcategory == subcategory)
+    if severity:
+        query = query.filter(Case.severity == severity)
+    if bol_status:
+        query = query.filter(Case.bol_status == bol_status)
+    if carrier:
+        query = query.filter(Case.carrier.ilike(f"%{carrier}%"))
+    if warehouse:
+        query = query.filter(Case.warehouse.ilike(f"%{warehouse}%"))
+    if item_name:
+        query = query.filter(Case.item_name.ilike(f"%{item_name}%"))
+    if date_from:
+        try:
+            dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+            query = query.filter(Case.created_at >= dt_from)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt_to = datetime.strptime(date_to, "%Y-%m-%d")
+            # Include the full day
+            from datetime import timedelta
+            dt_to = dt_to + timedelta(days=1)
+            query = query.filter(Case.created_at < dt_to)
+        except ValueError:
+            pass
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            or_(
+                Case.item_name.ilike(search_term),
+                Case.carrier.ilike(search_term),
+                Case.warehouse.ilike(search_term),
+            )
+        )
+
+    # Get total before joining verdicts for verdict filters
+    # For verdict/confidence filters, we need to join
+    needs_verdict_join = verdict is not None or min_confidence is not None or max_confidence is not None or sort_by in ("confidence_score", "verdict")
+
+    if needs_verdict_join:
+        query = query.outerjoin(Verdict, Case.id == Verdict.case_id)
+        if verdict:
+            query = query.filter(Verdict.verdict == verdict)
+        if min_confidence is not None:
+            query = query.filter(Verdict.confidence_score >= min_confidence)
+        if max_confidence is not None:
+            query = query.filter(Verdict.confidence_score <= max_confidence)
+
+    total = query.count()
+
+    # ── Apply sorting ─────────────────────────────────────────────────────────
+    sort_map = {
+        "created_at":      Case.created_at,
+        "updated_at":      Case.updated_at,
+        "severity":        Case.severity,
+        "carrier":         Case.carrier,
+        "category":        Case.category,
+        "status":          Case.status,
     }
+
+    if sort_by == "confidence_score" and needs_verdict_join:
+        sort_col = Verdict.confidence_score
+    elif sort_by == "verdict" and needs_verdict_join:
+        sort_col = Verdict.verdict
+    else:
+        sort_col = sort_map.get(sort_by, Case.created_at)
+
+    if sort_dir.lower() == "asc":
+        query = query.order_by(sort_col.asc())
+    else:
+        query = query.order_by(sort_col.desc())
+
+    # ── Pagination ────────────────────────────────────────────────────────────
+    offset = (page - 1) * page_size
+    cases = query.offset(offset).limit(page_size).all()
+
+    # ── Fetch verdicts for these cases ────────────────────────────────────────
+    case_ids = [c.id for c in cases]
+    if not needs_verdict_join:
+        verdict_map = {
+            v.case_id: v
+            for v in db.query(Verdict).filter(Verdict.case_id.in_(case_ids)).all()
+        }
+    else:
+        # Already joined, but we need the verdict objects separately for the response
+        verdict_map = {
+            v.case_id: v
+            for v in db.query(Verdict).filter(Verdict.case_id.in_(case_ids)).all()
+        }
 
     items = []
     for c in cases:
@@ -587,15 +790,19 @@ async def list_cases(limit: int = 50, offset: int = 0, db: Session = Depends(get
             subcategory=c.subcategory,
             item_name=c.item_name,
             severity=c.severity,
+            bol_status=c.bol_status,
+            delivery_date=c.delivery_date,
+            notification_date=c.notification_date,
+            damage_types=c.damage_types,
             verdict=v.verdict if v else None,
             confidence_score=v.confidence_score if v else None,
             verdict_created_at=v.created_at.isoformat() if v and v.created_at else None,
         ))
 
-    return CaseListResponse(total=total, items=items)
+    return CaseListResponse(total=total, page=page, page_size=page_size, items=items)
 
 
-# ── GET /api/cases/{case_id} ──────────────────
+# ── GET /api/cases/{case_id} ──────────────────────────────────────────────────
 
 @app.get("/api/cases/{case_id}")
 async def get_case(case_id: str, db: Session = Depends(get_db)):
@@ -610,6 +817,21 @@ async def get_case(case_id: str, db: Session = Depends(get_db)):
         .all()
     )
     verdict = db.query(Verdict).filter(Verdict.case_id == case_id).first()
+
+    verdict_data = None
+    if verdict:
+        report_sections = json.loads(verdict.report_sections) if verdict.report_sections else {}
+        verdict_data = {
+            "verdict":          verdict.verdict,
+            "confidence_score": verdict.confidence_score,
+            "reasoning":        verdict.reasoning,
+            "pattern_match_score":          verdict.pattern_match_score,
+            "photo_quality_score":          verdict.photo_quality_score,
+            "evidence_consistency_score":   verdict.evidence_consistency_score,
+            "historical_correlation_score": verdict.historical_correlation_score,
+            "report_sections":  report_sections,
+            "created_at":       verdict.created_at.isoformat(),
+        }
 
     return {
         "case": {
@@ -644,17 +866,11 @@ async def get_case(case_id: str, db: Session = Depends(get_db)):
             }
             for item in evidence_items
         ],
-        "verdict": {
-            "verdict":          verdict.verdict,
-            "confidence_score": verdict.confidence_score,
-            "reasoning":        verdict.reasoning,
-            "report_sections":  json.loads(verdict.report_sections) if verdict.report_sections else {},
-            "created_at":       verdict.created_at.isoformat(),
-        } if verdict else None,
+        "verdict": verdict_data,
     }
 
 
-# ── GET /api/cases/{case_id}/status ──────────
+# ── GET /api/cases/{case_id}/status ──────────────────────────────────────────
 
 @app.get("/api/cases/{case_id}/status")
 async def get_case_status(case_id: str, db: Session = Depends(get_db)):
@@ -671,7 +887,110 @@ async def get_case_status(case_id: str, db: Session = Depends(get_db)):
     }
 
 
-# ── POST /api/analyze/{case_id} ───────────────
+# ── GET /api/cases/{case_id}/claim-report ────────────────────────────────────
+
+@app.get("/api/cases/{case_id}/claim-report")
+async def get_claim_report(case_id: str, db: Session = Depends(get_db)):
+    """
+    Generate a structured claim report for a completed case.
+    Returns all data needed to file a carrier claim or document a manufacturing defect.
+    """
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    evidence_items = (
+        db.query(EvidenceItem)
+        .filter(EvidenceItem.case_id == case_id)
+        .order_by(EvidenceItem.upload_order)
+        .all()
+    )
+    verdict = db.query(Verdict).filter(Verdict.case_id == case_id).first()
+
+    report_sections = {}
+    if verdict and verdict.report_sections:
+        try:
+            report_sections = json.loads(verdict.report_sections)
+        except Exception:
+            report_sections = {}
+
+    # Build photo proof block
+    photo_proof = []
+    for item in evidence_items:
+        photo_proof.append({
+            "filename":     item.filename,
+            "url":          item.file_path,
+            "absolute_url": _build_absolute_url(item.file_path),
+            "upload_order": item.upload_order,
+        })
+
+    # Determine claim eligibility
+    claim_eligible = False
+    claim_type = None
+    if verdict:
+        if verdict.verdict == "transit":
+            claim_eligible = True
+            claim_type = "Carrier Freight Claim"
+        elif verdict.verdict == "manufacturing":
+            claim_eligible = True
+            claim_type = "Manufacturer Warranty / Vendor Claim"
+
+    # Build the full report
+    report = {
+        "report_id":    f"RPT-{case_id[:8].upper()}",
+        "case_id":      case_id,
+        "generated_at": datetime.utcnow().isoformat(),
+        "case_summary": {
+            "item_name":          case.item_name or "Not specified",
+            "category":           case.category or "Not specified",
+            "subcategory":        case.subcategory or "Not specified",
+            "carrier":            case.carrier or "Not specified",
+            "warehouse":          case.warehouse or "Not specified",
+            "delivery_date":      case.delivery_date or "Not specified",
+            "notification_date":  case.notification_date or "Not specified",
+            "ship_date":          case.ship_date or "Not specified",
+            "bol_status":         case.bol_status or "Not specified",
+            "bol_damage_desc":    case.bol_damage_desc or "None",
+            "damage_types":       case.damage_types.split(",") if case.damage_types else [],
+            "severity":           case.severity or "Not specified",
+            "damage_description": case.damage_description,
+            "damage_location":    case.damage_location or "Not specified",
+            "discovery_time":     case.discovery_time or "Not specified",
+            "damage_context":     case.damage_context or "None",
+        },
+        "analysis_result": {
+            "verdict":          verdict.verdict if verdict else "pending",
+            "confidence_score": verdict.confidence_score if verdict else 0,
+            "confidence_level": report_sections.get("confidence_level", "Low"),
+            "reasoning":        verdict.reasoning if verdict else "Analysis not yet completed",
+            "scores": {
+                "pattern_match":          verdict.pattern_match_score if verdict else 0,
+                "photo_quality":          verdict.photo_quality_score if verdict else 0,
+                "evidence_consistency":   verdict.evidence_consistency_score if verdict else 0,
+                "historical_correlation": verdict.historical_correlation_score if verdict else 0,
+            },
+            "primary_damage":   report_sections.get("primary_damage", "Unknown"),
+            "damage_type":      report_sections.get("damage_type", "Unknown"),
+            "completeness":     report_sections.get("completeness", 0),
+            "carrier_claim_probability": report_sections.get("carrier_claim_probability", {}),
+            "packaging_assessment":      report_sections.get("packaging_assessment", {}),
+            "photo_observations":        report_sections.get("photo_observations", []),
+            "missing_information":       report_sections.get("missing_information", []),
+            "next_steps":                report_sections.get("next_steps", []),
+        },
+        "claim_eligibility": {
+            "eligible":   claim_eligible,
+            "claim_type": claim_type,
+            "status":     case.status,
+        },
+        "photo_proof": photo_proof,
+        "photo_count": len(photo_proof),
+    }
+
+    return report
+
+
+# ── POST /api/analyze/{case_id} ───────────────────────────────────────────────
 
 @app.post("/api/analyze/{case_id}")
 async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
@@ -695,20 +1014,7 @@ async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
         result = run_openai_analysis(case, evidence_items)
     except Exception as e:
         logger.error(f"Analysis error for {case_id}: {e}")
-        result = {
-            "verdict": "inconclusive",
-            "confidence_score": 0,
-            "scores": {"pattern_match": 0, "photo_quality": 0,
-                       "evidence_consistency": 0, "historical_correlation": 0},
-            "photo_observations": [],
-            "reasoning": f"Analysis failed: {str(e)}",
-            "missing_information": [],
-            "report_sections": {
-                "primary_damage": "Unknown", "damage_type": "Unknown",
-                "severity": case.severity or "Not specified",
-                "confidence_level": "Low", "next_steps": [],
-            },
-        }
+        result = _make_fallback(case.severity, f"Analysis failed: {str(e)}")
 
     # Upsert verdict
     verdict = db.query(Verdict).filter(Verdict.case_id == case_id).first()
@@ -716,29 +1022,45 @@ async def analyze_case_endpoint(case_id: str, db: Session = Depends(get_db)):
         verdict = Verdict(case_id=case_id, created_at=datetime.utcnow())
         db.add(verdict)
 
-    verdict.verdict                    = result["verdict"]
-    verdict.confidence_score           = result["confidence_score"]
-    verdict.reasoning                  = result["reasoning"]
-    verdict.pattern_match_score        = result["scores"]["pattern_match"]
-    verdict.photo_quality_score        = result["scores"]["photo_quality"]
-    verdict.evidence_consistency_score = result["scores"]["evidence_consistency"]
+    verdict.verdict                      = result["verdict"]
+    verdict.confidence_score             = result["confidence_score"]
+    verdict.reasoning                    = result["reasoning"]
+    verdict.pattern_match_score          = result["scores"]["pattern_match"]
+    verdict.photo_quality_score          = result["scores"]["photo_quality"]
+    verdict.evidence_consistency_score   = result["scores"]["evidence_consistency"]
     verdict.historical_correlation_score = result["scores"]["historical_correlation"]
-    verdict.report_sections            = json.dumps(result.get("report_sections", {}))
+
+    # Store full report_sections including carrier_claim_probability, packaging_assessment, etc.
+    full_report_sections = result.get("report_sections", {})
+    full_report_sections["carrier_claim_probability"] = result.get("carrier_claim_probability", {})
+    full_report_sections["packaging_assessment"]      = result.get("packaging_assessment", {})
+    full_report_sections["photo_observations"]        = result.get("photo_observations", [])
+    full_report_sections["missing_information"]       = result.get("missing_information", [])
+
+    verdict.report_sections = json.dumps(full_report_sections)
 
     case.status     = "complete"
     case.updated_at = datetime.utcnow()
     db.commit()
 
     return {
-        "case_id":        case_id,
-        "status":         "complete",
-        "verdict":        verdict.verdict,
+        "case_id":          case_id,
+        "status":           "complete",
+        "verdict":          verdict.verdict,
         "confidence_score": verdict.confidence_score,
-        "reasoning":      verdict.reasoning,
-        "photo_observations": result.get("photo_observations", []),
-        "missing_information": result.get("missing_information", []),
-        "report_sections": result.get("report_sections", {}),
-        "message":        "Analysis complete",
+        "reasoning":        verdict.reasoning,
+        "scores": {
+            "pattern_match":          verdict.pattern_match_score,
+            "photo_quality":          verdict.photo_quality_score,
+            "evidence_consistency":   verdict.evidence_consistency_score,
+            "historical_correlation": verdict.historical_correlation_score,
+        },
+        "photo_observations":        result.get("photo_observations", []),
+        "missing_information":        result.get("missing_information", []),
+        "carrier_claim_probability":  result.get("carrier_claim_probability", {}),
+        "packaging_assessment":       result.get("packaging_assessment", {}),
+        "report_sections":            result.get("report_sections", {}),
+        "message":                    "Analysis complete",
     }
 
 

@@ -6,8 +6,10 @@ import DamageDescription from './components/DamageDescription'
 import Review from './components/Review'
 import Analyzing from './components/Analyzing'
 import Report from './components/Report'
+import History from './components/History'
 
 function App() {
+  const [view, setView] = useState('wizard') // 'wizard' | 'history'
   const [currentStep, setCurrentStep] = useState(1)
   const [formData, setFormData] = useState({
     // Step 1: Case Details
@@ -18,12 +20,12 @@ function App() {
     bolDamageDesc: '',
     carrier: '',
     warehouse: '',
-    
+
     // Step 2: Item Details
     category: '',
     subcategory: '',
     itemName: '',
-    
+
     // Step 3: Damage Info
     damageTypes: [],
     severity: 'Moderate',
@@ -32,7 +34,7 @@ function App() {
     discoveryTime: '',
     damageContext: '',
     photos: [],
-    
+
     // Analysis results
     caseId: '',
     analysisResult: null
@@ -73,6 +75,7 @@ function App() {
       caseId: '',
       analysisResult: null
     })
+    setView('wizard')
   }
 
   const renderStep = () => {
@@ -138,28 +141,81 @@ function App() {
         <div className="header">
           <h1>🛋️ Furniture Forensic Analyst v2</h1>
           <p>AI-Powered Damage Attribution</p>
-          
-          <div className="progress-bar">
-            <div 
-              className="progress-fill" 
-              style={{ width: `${(currentStep / 6) * 100}%` }}
-            ></div>
+
+          {/* Tab Navigation */}
+          <div style={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: 8,
+            marginTop: 16,
+            marginBottom: 8,
+          }}>
+            <button
+              onClick={() => setView('wizard')}
+              style={{
+                padding: '8px 20px',
+                border: 'none',
+                borderRadius: 20,
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                background: view === 'wizard' ? '#667eea' : 'rgba(255,255,255,0.2)',
+                color: view === 'wizard' ? '#fff' : 'rgba(255,255,255,0.85)',
+                transition: 'all 0.2s',
+              }}
+            >
+              ➕ New Case
+            </button>
+            <button
+              onClick={() => setView('history')}
+              style={{
+                padding: '8px 20px',
+                border: 'none',
+                borderRadius: 20,
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                background: view === 'history' ? '#667eea' : 'rgba(255,255,255,0.2)',
+                color: view === 'history' ? '#fff' : 'rgba(255,255,255,0.85)',
+                transition: 'all 0.2s',
+              }}
+            >
+              📋 Case History
+            </button>
           </div>
-          
-          <div className="steps">
-            {[1, 2, 3, 4, 5, 6].map(step => (
-              <div
-                key={step}
-                className={`step ${currentStep === step ? 'active' : ''} ${currentStep > step ? 'completed' : ''}`}
-              >
-                {step}
+
+          {/* Progress bar — only show in wizard view, not on analyzing/report steps */}
+          {view === 'wizard' && currentStep <= 4 && (
+            <>
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${(currentStep / 4) * 100}%` }}
+                ></div>
               </div>
-            ))}
-          </div>
+
+              <div className="steps">
+                {[1, 2, 3, 4].map(step => (
+                  <div
+                    key={step}
+                    className={`step ${currentStep === step ? 'active' : ''} ${currentStep > step ? 'completed' : ''}`}
+                  >
+                    {step}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-        
+
         <div className="content">
-          {renderStep()}
+          {view === 'history' ? (
+            <div className="step-content" style={{ maxWidth: '100%' }}>
+              <History />
+            </div>
+          ) : (
+            renderStep()
+          )}
         </div>
       </div>
     </div>

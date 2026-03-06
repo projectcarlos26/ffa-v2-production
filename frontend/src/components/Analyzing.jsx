@@ -9,9 +9,7 @@ function Analyzing({ formData, updateFormData, nextStep }) {
           `${import.meta.env.VITE_API_BASE_URL}/api/analyze/${formData.caseId}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            }
+            headers: { 'Content-Type': 'application/json' }
           }
         );
 
@@ -19,24 +17,52 @@ function Analyzing({ formData, updateFormData, nextStep }) {
           throw new Error('Analysis failed');
         }
 
-        const result = await response.json();
+        const analysisData = await response.json();
 
-        // Get full case data with verdict
-        const caseResponse = await fetch(
-          `${import.meta.env.VITE_API_BASE_URL}/api/cases/${formData.caseId}`
-        );
+        // Build the full analysisResult object from the analyze response
+        // This includes scores, carrier_claim_probability, packaging_assessment, etc.
+        const analysisResult = {
+          verdict:          analysisData.verdict,
+          confidence_score: analysisData.confidence_score,
+          reasoning:        analysisData.reasoning,
 
-        if (!caseResponse.ok) {
-          throw new Error('Failed to get case data');
-        }
+          // Flat score fields for Report.jsx compatibility
+          pattern_match_score:          analysisData.scores?.pattern_match          ?? 0,
+          photo_quality_score:          analysisData.scores?.photo_quality          ?? 0,
+          evidence_consistency_score:   analysisData.scores?.evidence_consistency   ?? 0,
+          historical_correlation_score: analysisData.scores?.historical_correlation ?? 0,
 
-        const caseData = await caseResponse.json();
+          // New fields
+          photo_observations:       analysisData.photo_observations       ?? [],
+          missing_information:      analysisData.missing_information      ?? [],
+          carrier_claim_probability: analysisData.carrier_claim_probability ?? {},
+          packaging_assessment:     analysisData.packaging_assessment     ?? {},
 
-        updateFormData({ analysisResult: caseData.verdict });
+          // Report sections (completeness, next_steps, primary_damage, etc.)
+          report_sections: analysisData.report_sections ?? {},
+        };
+
+        updateFormData({ analysisResult });
         nextStep();
       } catch (error) {
         console.error('Analysis error:', error);
-        // Still proceed but with error
+        // Still proceed but with minimal result so Report.jsx can show error state
+        updateFormData({
+          analysisResult: {
+            verdict: 'inconclusive',
+            confidence_score: 0,
+            reasoning: 'Analysis could not be completed. Please try again.',
+            pattern_match_score: 0,
+            photo_quality_score: 0,
+            evidence_consistency_score: 0,
+            historical_correlation_score: 0,
+            photo_observations: [],
+            missing_information: [],
+            carrier_claim_probability: {},
+            packaging_assessment: {},
+            report_sections: {},
+          }
+        });
         nextStep();
       }
     };
@@ -51,7 +77,7 @@ function Analyzing({ formData, updateFormData, nextStep }) {
       <div className="spinner"></div>
       <h2>Analyzing Your Case...</h2>
       <p>Our AI is analyzing using the 4-factor confidence algorithm</p>
-      
+
       <div style={{ marginTop: 30, textAlign: 'left', maxWidth: 400, margin: '30px auto 0' }}>
         <div style={{ color: '#667eea', fontWeight: 600, marginBottom: 10 }}>
           Analysis Steps:
